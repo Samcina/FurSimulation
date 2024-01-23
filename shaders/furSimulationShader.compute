@@ -1,0 +1,123 @@
+#version 430
+
+layout(local_size_x = 1, local_size_y = 1) in;
+layout(rgba16f, binding = 0) uniform readonly image2D img_rest_pos;
+layout(rgba16f, binding = 1) uniform readonly image2D img_last_pos;
+layout(rgba16f, binding = 2) uniform readonly image2D img_current_pos;
+layout(rgba16f, binding = 3) uniform writeonly image2D img_simulated_pos;
+
+uniform mat4 model;
+
+uniform float hairSegmentLength;
+
+uniform float windMagnitude;
+uniform vec4 windDirection;
+
+const int noOfHairSegments = 5;
+
+void fullfillEdgeConstraint(inout vec4 p1, inout vec4 p2, int index);
+void fullfillLocalConstraint(inout vec4 p0, inout vec4 p1, in vec4 p1_rest, in int index);
+
+void main() {
+
+    ivec2 texCoords[noOfHairSegments];
+    vec4 rest_pos[noOfHairSegments];
+    vec4 last_pos[noOfHairSegments];
+    vec4 curr_pos[noOfHairSegments];
+    vec4 new_pos[noOfHairSegments];
+    vec4 curr_vel[noOfHairSegments];
+
+    for(int i = 0; i < noOfHairSegments; i++){
+        texCoords[i] = ivec2(gl_GlobalInvocationID.xy) + ivec2(i, 0);
+        rest_pos[i] = model * imageLoad(img_rest_pos, texCoords[i]);
+        last_pos[i] = imageLoad(img_last_pos, texCoords[i]);
+        curr_pos[i] = imageLoad(img_current_pos, texCoords[i]);
+
+        new_pos[i] = curr_pos[i];
+        curr_vel[i] = curr_pos[i] - last_pos[i];
+    }
+
+    float dt = 0.03;
+    vec4 gravity = vec4(0.f, -9.82, 0.f, 0.f);
+    for(int i = 1; i < noOfHairSegments; i++){
+        new_pos[i] = curr_pos[i] + curr_vel[i] + gravity * pow(dt, 2);
+    }
+    float max_c_strength = 0.08f;
+    float constraint_strength = max_c_strength;
+    for(int i = 0; i < noOfHairSegments; i++){
+        new_pos[i] = new_pos[i] + constraint_strength * (rest_pos[i] - new_pos[i]);
+        constraint_strength = constraint_strength - (max_c_strength/noOfHairSegments);
+    }
+    int maxIter = 2;
+    int iter = 0;
+    while(iter < maxIter){
+        for(int i = 1; i < noOfHairSegments; i++){
+            fullfillLocalConstraint(new_pos[i-1], new_pos[i], rest_pos[i], i);
+        }
+        iter++;
+    }
+
+    maxIter = 2;
+    iter = 0;
+    while(iter < maxIter){
+        for(int i = 0; i < noOfHairSegments-1; i++){
+            fullfillEdgeConstraint(new_pos[i], new_pos[i+1], i);
+        }
+        iter++;
+    }
+
+    for(int i = 1; i < noOfHairSegments; i++){
+        float a = (texCoords[i].x) % 20 / 20;
+
+        vec4 c1 = normalize(vec4(0.f, 1.f, 0.f, 0.f));
+        vec4 c2 = normalize(vec4(cross(vec3(c1), vec3(windDirection)), 0.f));
+
+        vec4 w1 = windDirection + 0.2 * c1 + 0.2 * c2;
+        vec4 w2 = windDirection + 0.2 * c1 - 0.2 * c2;
+        vec4 w3 = windDirection - 0.2 * c1 + 0.2 * c2;
+        vec4 w4 = windDirection - 0.2 * c1 - 0.2 * c2;
+
+        vec4 wind = a * w1 + (1 - a) * w2 + a * w3 + (1 - a) * w4;
+
+        vec4 v = new_pos[i-1] - new_pos[i];
+        vec4 f = 1.0f * vec4(cross(cross(vec3(v), vec3(wind)), vec3(v)), 0.0f);
+        vec4 dP = pow(dt, 2) * f;
+        new_pos[i] = new_pos[i] + windMagnitude * dP;
+    }
+
+    for(int i = 0; i < noOfHairSegments; i++){
+        imageStore(img_simulated_pos, texCoords[i], new_pos[i]);
+    }
+}
+
+void fullfillEdgeConstraint(inout vec4 p1, inout vec4 p2, int index){
+    vec4 n = normalize(p1 - p2);
+    float deltaD = length(p1 - p2) - hairSegmentLength;
+    vec4 dP1, dP2;
+    if(index == 0){
+        dP1 = vec4(0.f);
+        dP2 = deltaD * n;
+    } else {
+        dP1 = -0.5 * deltaD * n;
+        dP2 =  0.5 * deltaD * n;
+    }
+
+    p1 = p1 + dP1;
+    p2 = p2 + dP2;
+}
+
+void fullfillLocalConstraint(inout vec4 p0, inout vec4 p1, in vec4 p1_rest, in int index){
+    vec4 d = p1_rest - p1;
+    float local_constraint_strength = 0.005f;
+    vec4 dP0, dP1;
+        if(index == 0){
+            dP0 = vec4(0.f);
+            dP1 = local_constraint_strength * d;
+        } else {
+            dP0 = -0.5 * local_constraint_strength * d;
+            dP1 =  0.5 * local_constraint_strength * d;
+        }
+
+    p0 = p0 + dP0;
+    p1 = p1 + dP1;
+}
